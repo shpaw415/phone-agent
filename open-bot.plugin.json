@@ -1,0 +1,227 @@
+{
+  "$schema": "/home/agent/.config/opencode/skills/plugin/open-bot.plugin.schema.json",
+  "id": "phone-agent",
+  "name": "Phone Agent",
+  "version": "beta-2",
+  "description": "Speech-to-speech phone agent on Twilio or SignalWire: it places and answers real phone calls with an xAI Grok Voice model. Give it a mission in any thread (call a restaurant, order delivery), it talks on the phone, can start threads and delegate to your open-bot desktop, and reports back. One dashboard app: live calls, missions and settings in one place.",
+  "author": "Justin Hallé",
+  "repo": "shpaw415/phone-agent",
+  "category": "voice",
+  "tags": [
+    "voice",
+    "phone",
+    "twilio",
+    "signalwire",
+    "voip",
+    "speech",
+    "realtime",
+    "calls"
+  ],
+  "permissions": {
+    "vaultRead": [
+      "xai"
+    ],
+    "vaultCreate": [
+      "xai-api-key",
+      "phone-agent-twilio-sid",
+      "phone-agent-twilio-token",
+      "phone-agent-twilio-phone",
+      "phone-agent-signalwire-project",
+      "phone-agent-signalwire-token",
+      "phone-agent-signalwire-phone",
+      "phone-agent-signalwire-signing-key"
+    ],
+    "notifications": true
+  },
+  "configs": [
+    {
+      "key": "provider",
+      "label": "Speech-to-speech provider",
+      "type": "enum",
+      "def": "xai",
+      "options": [
+        "xai"
+      ]
+    },
+    {
+      "key": "phone_provider",
+      "label": "Phone provider (telephony: Twilio or SignalWire)",
+      "type": "enum",
+      "def": "twilio",
+      "options": [
+        "twilio",
+        "signalwire"
+      ]
+    },
+    {
+      "key": "model",
+      "label": "Realtime model",
+      "def": "grok-voice-latest"
+    },
+    {
+      "key": "voice",
+      "label": "Agent voice (provider voice name)",
+      "def": "eve"
+    },
+    {
+      "key": "instructions",
+      "label": "Agent rules (default system prompt)",
+      "def": "You are a phone agent making and receiving real phone calls on behalf of its user. You are on an actual phone line: be natural, brief and polite, one idea per sentence, no lists or markdown. Detect the language the other person speaks and answer in that same language. When a mission is given, work toward it, confirm important details (names, prices, times) out loud, and say a short summary of the outcome before the call ends. You have tools: start_thread to open a background open-bot thread for follow-up work, delegate_openbot to run a task on the user's open-bot desktop and get the result, and hang_up_call to end the call when the mission is done or the caller wants to go."
+    },
+    {
+      "key": "capabilities",
+      "label": "What the open-bot agent can do (told to the phone agent)",
+      "def": "search the web and read pages, automate a desktop browser, read and write files on the desktop, generate images and videos, build 3D models, write and run code, create schedules and recurring jobs, start background threads for longer work, and use installed plugins (price watching, shared calendar, lead management, web search). It cannot make other phone calls or access accounts the user has not connected."
+    },
+    {
+      "key": "delegate_agent",
+      "label": "opencode agent used for delegation (blank = default)",
+      "def": ""
+    },
+    {
+      "key": "delegate_timeout",
+      "label": "Delegation timeout in seconds",
+      "type": "number",
+      "def": "240",
+      "min": 30,
+      "max": 600
+    },
+    {
+      "key": "public_base",
+      "label": "Public endpoint base URL (Config page → Endpoints, e.g. https://host/hooks/phone-agent)",
+      "def": ""
+    },
+    {
+      "key": "twilio_account_sid",
+      "label": "Twilio Account SID (or vault slug phone-agent-twilio-sid)",
+      "type": "secret",
+      "def": ""
+    },
+    {
+      "key": "twilio_auth_token",
+      "label": "Twilio Auth Token (or vault slug phone-agent-twilio-token)",
+      "type": "secret",
+      "def": ""
+    },
+    {
+      "key": "twilio_phone",
+      "label": "Twilio phone number (or vault slug phone-agent-twilio-phone)",
+      "def": ""
+    },
+    {
+      "key": "signalwire_space",
+      "label": "SignalWire Space name (the xxx of xxx.signalwire.com)",
+      "def": ""
+    },
+    {
+      "key": "signalwire_project",
+      "label": "SignalWire Project ID (or vault slug phone-agent-signalwire-project)",
+      "type": "secret",
+      "def": ""
+    },
+    {
+      "key": "signalwire_token",
+      "label": "SignalWire API token (or vault slug phone-agent-signalwire-token)",
+      "type": "secret",
+      "def": ""
+    },
+    {
+      "key": "signalwire_phone",
+      "label": "SignalWire phone number (or vault slug phone-agent-signalwire-phone)",
+      "def": ""
+    },
+    {
+      "key": "signalwire_signing_key",
+      "label": "SignalWire signing key, webhook verification (or vault slug phone-agent-signalwire-signing-key)",
+      "type": "secret",
+      "def": ""
+    },
+    {
+      "key": "signalwire_base",
+      "label": "SignalWire API base override (blank = https://SPACE.signalwire.com/api/laml; for tests only)",
+      "def": ""
+    },
+    {
+      "key": "signalwire_verify",
+      "label": "Verify SignalWire webhook signatures (recommended once configured)",
+      "type": "bool",
+      "def": "false"
+    },
+    {
+      "key": "xai_api_key",
+      "label": "xAI API key (or vault slug xai-api-key / shared xAI key)",
+      "type": "secret",
+      "def": ""
+    },
+    {
+      "key": "twilio_base",
+      "label": "Twilio API base override (blank = https://api.twilio.com; for tests only)",
+      "def": ""
+    },
+    {
+      "key": "gateway_base",
+      "label": "xAI gateway base URL override (blank = https://api.x.ai; for tests only)",
+      "def": ""
+    },
+    {
+      "key": "auto_answer",
+      "label": "Auto-answer incoming calls with the agent",
+      "type": "bool",
+      "def": "true"
+    },
+    {
+      "key": "twilio_verify",
+      "label": "Verify Twilio request signatures (recommended once configured)",
+      "type": "bool",
+      "def": "false"
+    }
+  ],
+  "files": [
+    {
+      "name": "server",
+      "source": "server/server.ts",
+      "exec": true
+    },
+    {
+      "name": "call",
+      "source": "tools/call.ts",
+      "exec": true
+    },
+    {
+      "name": "hangup",
+      "source": "tools/hangup.ts",
+      "exec": true
+    },
+    {
+      "name": "status",
+      "source": "tools/status.ts",
+      "exec": true
+    },
+    {
+      "name": "mission-worker",
+      "source": "worker/worker.ts",
+      "exec": true
+    }
+  ],
+  "dashboard": {
+    "pages": {
+      "entry": "server",
+      "public": true
+    },
+    "tabs": [
+      {
+        "id": "phone",
+        "title": "Phone Agent",
+        "icon": "phone_in_talk",
+        "kind": "app"
+      }
+    ]
+  },
+  "skills": [
+    {
+      "name": "phone-agent",
+      "description": "Use when the user asks to call someone or a business by phone, wants the phone agent to handle or answer a call, asks about a phone mission or its report, or wants to set up, configure or troubleshoot the Phone Agent plugin. Always answer in the user's language.",
+      "body": "# Phone Agent (speech-to-speech phone calls on Twilio or SignalWire)\n\nThe user has a phone agent that makes and answers real phone calls with a speech-to-speech model (xAI Grok Voice) over a telephony provider: Twilio (default) or SignalWire (`phone_provider=signalwire`). One dashboard app **Dashboards → Phone Agent** with three in-app sections: **Calls** (live calls + transcript + whisper mic + history), **Missions** (place a mission, follow reports), **Settings** (state and setup instructions).\n\n## Check status\n\nRun `ob-plugin-phone-agent-status`. It prints JSON: `hasKey` (xAI), `phoneProvider` (`twilio` or `signalwire`), `tel` (readiness of the ACTIVE provider: `sid`, `token`, `phone`), `signalwire` (per-field SignalWire state), `publicBase` set or not, plus `ready` and a `hint`. Never print any secret value.\n\n## Launch a call mission from a thread\n\nThe user asks in any thread, e.g. « appelle le restaurant X et commande une livraison pour 18h ». Run:\n\n```\nob-plugin-phone-agent-call --to \"+18195550123\" --mission \"Call Restaurant X. Order delivery for 6 PM: [details the user gave]. Confirm the total and the delivery time out loud, then hang up.\"\n```\n\n- `--to` is required, E.164 format (`+` and country code). `--mission` is the instructions for the agent on the call — write it self-contained, in the language the callee will speak, with every detail the user gave.\n- It prints JSON with `missionId` and `callSid`. The report lands in the Missions tab when the call ends; also announce it when you see it via `ob-plugin-phone-agent-status --last-report` or the missions API.\n- To end early: `ob-plugin-phone-agent-hangup` (active call) or `--callsid CSxxxx`.\n\n## Incoming calls\n\nIncoming calls to the provider number ring in the dashboard and are answered by the agent when auto-answer is on (off: the caller hears a notice and the call is declined politely). The user can watch the live transcript and whisper instructions to the agent from the dashboard tab.\n\n## Setup (only when status shows missing pieces)\n\n1. xAI key: shared key on the Config page Keys tab (slug `xai`) usually already covers it; otherwise paste one in Plugins → Phone Agent → Settings, or fill vault slug `xai-api-key`.\n2. Telephony credentials for the ACTIVE provider (`phone_provider` setting):\n   - Twilio: vault slugs `phone-agent-twilio-sid`, `phone-agent-twilio-token`, `phone-agent-twilio-phone`.\n   - SignalWire: set `signalwire_space` (the xxx of xxx.signalwire.com) and vault slugs `phone-agent-signalwire-project` (Project ID), `phone-agent-signalwire-token` (API token), `phone-agent-signalwire-phone` — all from dashboard.signalwire.com → API Credentials / Phone Numbers.\n3. The Config page → Endpoints tab must be enabled for this plugin; copy the endpoint URL and set the `public_base` setting to it (e.g. `https://<host>/hooks/phone-agent`). The Settings tab then shows the exact **Voice webhook URL** to paste on the provider number: Twilio → `<public_base>/twilio/voice`, SignalWire → `<public_base>/signalwire/voice` (HTTP POST). Optional status callback: `/twilio/status` or `/signalwire/status`.\n4. Optional hardening: `twilio_verify=true` (Twilio) or fill the SignalWire **signing key** (Dashboard → API Credentials → Signing Key) and set `signalwire_verify=true`.\n5. First real test: call the provider number from a regular phone; the agent answers and the call shows in the dashboard.\n\n## Troubleshooting\n\n- Outbound fails with provider error 21211: the `--to` number is not E.164. 21221: no compatible voice number as `From`.\n- No audio but call connects: check the media stream URL (`public_base` + `/media`) is the wss form and the endpoint is enabled; check the xAI key. SignalWire streams require wss (https `public_base`).\n- Agent answers but is mute on the phone line: voice name may not exist — try voice `eve` in settings.\n- SignalWire REST errors mention scopes: the API token needs the **Voice** scope enabled.\n- The plugin server keeps no secrets in the page; everything comes from the vault/config at runtime.\n\n## Language rules (mandatory)\n\nAlways answer the user in their language. The phone agent itself auto-detects the callee's language; only change that through the `instructions` setting, never by hardcoding a language in code.\n"
+    }
+  ]
+}
