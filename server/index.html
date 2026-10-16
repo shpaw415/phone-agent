@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Phone Agent</title>
+<script>
+(function(){try{var q=new URLSearchParams(location.search).get('theme');var t=(q==='light'||q==='dark')?q:((window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light');document.documentElement.setAttribute('data-theme',t);if(window.matchMedia){var mq=window.matchMedia('(prefers-color-scheme: dark)');var h=function(e){if(!(new URLSearchParams(location.search).get('theme'))){document.documentElement.setAttribute('data-theme',e.matches?'dark':'light');}};if(mq.addEventListener){mq.addEventListener('change',h);}else if(mq.addListener){mq.addListener(h);}}}catch(e){}})();
+</script>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div class="wrap"><h1 id="t-title">Phone Agent</h1><p class="sub" id="t-sub"></p><div class="navrow"><button class="navbtn" id="nav-calls"></button><button class="navbtn" id="nav-missions"></button><button class="navbtn" id="nav-settings"></button></div><section id="sec-calls"><div id="c-banner" class="banner setup"></div><div id="c-ring" class="banner ring" style="display:none"></div><div class="card"><div class="row" style="justify-content:space-between"><strong id="t-live"></strong><span class="pill" id="c-livepill">—</span></div><div id="c-livebox"></div></div><div class="card"><strong id="t-hist"></strong><div style="margin-top:10px"><table><thead><tr><th id="h-when"></th><th id="h-dir"></th><th id="h-num"></th><th id="h-dur"></th><th id="h-st"></th></tr></thead><tbody id="c-calls"></tbody></table><div class="empty" id="c-nocalls"></div></div></div></section><section id="sec-missions" style="display:none"><div id="m-banner" class="banner setup"></div><div class="card"><strong id="t-new"></strong><label id="l-to"></label><input type=text id="m-to" placeholder="+18195550123"><label id="l-m"></label><textarea id="m-text"></textarea><div class="row" style="margin-top:10px"><button class="primary" id="m-place"></button><span id="m-msg" class="sub"></span></div></div><div class="card"><strong id="t-list"></strong><div id="m-list" style="margin-top:10px"></div><div class="empty" id="m-nom"></div></div></section><section id="sec-settings" style="display:none"><div id="s-banner" class="banner setup"></div><div class="card"><strong id="t-check"></strong><div id="s-checks" style="margin-top:10px"></div></div><div class="card"><strong id="t-hooks"></strong><p class="sub" id="t-hookhelp"></p><label id="l-vurl"></label><div class="mono" id="s-vurl"></div><label id="l-surl"></label><div class="mono" id="s-surl"></div></div><div class="card"><strong id="t-cur"></strong><div id="s-cur" style="margin-top:10px"></div></div><div class="card"><strong id="t-cli"></strong><p class="sub mono" id="s-cli" style="white-space:pre-wrap"></p></div></section><p class="sub" id="foot"></p></div><script src="./app.ts"></script>
+</body>
+</html>
