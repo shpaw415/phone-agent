@@ -90,5 +90,9 @@ Either provider:
 6. Optional hardening, once the URL is final: Twilio →
    `twilio_verify=true`; SignalWire → fill the signing key and
    `signalwire_verify=true`.
+   The `/media` audio bridge is always token-gated: the server bakes a
+   per-call HMAC token into the wss stream URL it hands the provider, so
+   outside parties cannot open it, converse with the agent or spend xAI
+   credits — no configuration needed.
 7. Test: `ob-plugin-phone-agent-call --to "+1…" --mission "…"`, then check the
    Missions tab for the report. From a thread, just ask: “appelle … et …”.

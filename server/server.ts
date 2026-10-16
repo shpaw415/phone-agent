@@ -341,8 +341,26 @@ function xmlAttr(v: string): string {
   return v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+/** Shared secret for per-call media tokens: a runtime secret that already
+ *  exists on every working setup (never leaves the server, never logged). */
+function mediaSecret(): string {
+  const c = conf();
+  return c.xaiKey || c.tel.token || c.tel.signingKey || "";
+}
+
+/** Per-call token bound to the stream parameters. The telephony provider just
+ *  echoes the wss URL back, so it needs no knowledge of the token — but an
+ *  outside party cannot open /media without it (fail closed when no secret). */
+function mediaToken(call: string, dir: string, mission: string): string {
+  const s = mediaSecret();
+  if (!s) return "";
+  return createHmac("sha256", s).update(`${call}:${dir}:${mission}`).digest("hex").slice(0, 32);
+}
+
 function streamUrl(extra: Record<string, string>): string {
   const c = conf();
+  const t = mediaToken(extra.call || "", extra.dir || "", extra.mission || "");
+  if (t) extra = { ...extra, t };
   const q = new URLSearchParams(extra).toString();
   return c.publicBase.replace(/^https/i, "wss") + "/media?" + q;
 }
@@ -409,6 +427,8 @@ type Bridge = {
   hangupAt: number;
   startedAt: number;
   timer: ReturnType<typeof setInterval> | null;
+  /** Queryless upgrade not yet identified by a "start" event: no session, no records. */
+  inert?: boolean;
 };
 
 const bridges = new Map<string, Bridge>(); // by callSid
@@ -484,6 +504,7 @@ function addTurn(b: Bridge, role: Turn["role"], text: string) {
 }
 
 function saveBridge(b: Bridge, force = false) {
+  if (b.inert) return;
   if (!force && !b.saveDirty) return;
   b.saveDirty = false;
   b.rec.durationSec = Math.round((Date.now() - b.startedAt) / 1000);
@@ -694,6 +715,11 @@ function closeBridge(callSid: string, reason: string) {
   try {
     b.xai?.close();
   } catch {}
+  if (b.inert) {
+    // Never identified: nothing was recorded, nothing to persist.
+    console.log(`[phone-agent] inert socket dropped ${callSid}: ${reason}`);
+    return;
+  }
   b.rec.status = b.rec.status === "in-progress" ? "completed" : b.rec.status;
   saveBridge(b, true);
   console.log(`[phone-agent] bridge closed ${callSid}: ${reason}`);
@@ -703,8 +729,13 @@ function handleTwilioSocket(ws: any, params: URLSearchParams) {
   const callSid = params.get("call") || "unknown";
   const dir = params.get("dir") === "in" ? "in" : "out";
   const missionId = params.get("mission") || undefined;
+  // Queryless upgrade (some Twilio edge builds strip the wss query string):
+  // the bridge stays INERT — no record, no model session, no polling — until
+  // a real "start" event identifies the call on this socket. Nobody can talk
+  // to the model or touch records through an unidentified socket.
+  const inert = callSid === "unknown";
   const now = new Date().toISOString();
-  const prev = loadDetail(callSid);
+  const prev = inert ? null : loadDetail(callSid);
   const missionRec = missionId ? loadMissions().find((x) => x.id === missionId) : undefined;
   const b: Bridge = {
     twilio: ws,
@@ -734,7 +765,13 @@ function handleTwilioSocket(ws: any, params: URLSearchParams) {
     hangupAt: 0,
     startedAt: Date.now(),
     timer: null,
+    inert,
   };
+  if (inert) {
+    bridges.set(callSid, b);
+    console.log("[phone-agent] unidentified media socket — waiting for start event");
+    return;
+  }
   b.rec.status = "in-progress";
   b.rec.answered = true;
   bridges.set(callSid, b);
@@ -773,6 +810,9 @@ function onTwilioMessage(ws: any, raw: string | Buffer) {
       bridges.delete(altKey);
       b.callSid = callSid;
       b.rec.callSid = callSid;
+      // Bind the bridge to THIS socket: media and xAI audio must flow over the
+      // connection the provider actually opened, never a stale one.
+      b.twilio = ws;
       if (ws.data) ws.data.callSid = callSid;
       if (b.rec.missionId === undefined && mp.mission) b.missionId = String(mp.mission);
       bridges.set(callSid, b);
@@ -782,6 +822,18 @@ function onTwilioMessage(ws: any, raw: string | Buffer) {
         saveCalls(loadCalls().filter((c) => c.callSid !== altKey));
         require("node:fs").rmSync(join(DATA_DIR, detailFile(altKey)), { force: true });
       } catch {}
+      if (b.inert) {
+        // Unidentified socket now proven to carry a real call: activate it.
+        b.inert = false;
+        b.timer = setInterval(() => {
+          pollDelegations(b);
+          if (Date.now() - b.startedAt > MAX_CALL_SEC * 1000) {
+            b.rec.error = "Hard time limit reached.";
+            hangupCall(callSid);
+          }
+        }, 2000);
+        openXai(b);
+      }
       saveBridge(b, true);
       console.log(`[phone-agent] bridge re-keyed to ${callSid} (was "${altKey}")`);
     }
@@ -994,8 +1046,20 @@ const server = Bun.serve({
 
     /* WebSocket for Twilio media (public hook: /hooks/phone-agent/media) */
     if (p === "/media") {
+      // Per-call token gate: any upgrade that CARRIES stream parameters must
+      // present the token the server baked into the wss URL for that exact
+      // call (fail closed when no secret is configured). Queryless upgrades
+      // (Twilio edge builds that strip the query) are allowed through but the
+      // bridge stays inert until a real "start" event identifies the call.
+      const call = url.searchParams.get("call");
+      if (call) {
+        const want = mediaToken(call, url.searchParams.get("dir") || "", url.searchParams.get("mission") || "");
+        if (!want || url.searchParams.get("t") !== want) {
+          return new Response("unauthorized", { status: 401 });
+        }
+      }
       const ok = server.upgrade(req, {
-        data: { callSid: url.searchParams.get("call") || undefined, query: url.search || "" },
+        data: { callSid: call || undefined, query: url.search || "" },
       });
       return ok ? undefined : new Response("ws upgrade failed", { status: 400 });
     }
