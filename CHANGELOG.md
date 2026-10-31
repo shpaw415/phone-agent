@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0
+
+- Promote the security-reviewed beta-5 authentication fixes to the first stable
+  release so normal marketplace installs receive the corrected version.
+
 ## beta-5
 
 - Require valid provider signatures on every telephony webhook, including

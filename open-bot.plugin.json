@@ -2,7 +2,7 @@
   "$schema": "/home/agent/.config/opencode/skills/plugin/open-bot.plugin.schema.json",
   "id": "phone-agent",
   "name": "Phone Agent",
-  "version": "beta-5",
+  "version": "0.1.0",
   "description": "Speech-to-speech phone agent on Twilio or SignalWire: it places and answers real phone calls with an xAI Grok Voice model. Give it a mission in any thread (call a restaurant, order delivery), it talks on the phone, can start threads and delegate to your open-bot desktop, and reports back. One dashboard app: live calls, missions and settings in one place.",
   "author": "shpaw415",
   "repo": "shpaw415/phone-agent",
