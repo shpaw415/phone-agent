@@ -114,7 +114,7 @@ const out: Record<string, unknown> = {
   twilioBase,
   signalwireBase: tel.base || false,
   autoAnswer: (s.auto_answer ?? "true") === "true",
-  verify: PROVIDER === "signalwire" ? (s.signalwire_verify ?? "false") === "true" : (s.twilio_verify ?? "false") === "true",
+  verify: true,
   model: (s.model || "grok-voice-latest").trim(),
   voice: (s.voice || "eve").trim(),
   activeCalls: active.map((c) => ({ callSid: c.callSid, direction: c.direction, status: c.status })),

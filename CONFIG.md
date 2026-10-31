@@ -30,7 +30,7 @@ Change with `ob-plugin settings phone-agent KEY=value` (or the Plugins page).
 | delegate_agent | string | (empty) | Only if they want delegation to run with a specific opencode agent. |
 | delegate_timeout | number | 240 | Seconds a delegated desktop task may take during a call. |
 | auto_answer | bool | true | Whether incoming calls to the provider number are answered by the agent. Off = polite decline. |
-| twilio_verify | bool | false | Twilio only — turn on once `public_base` is final (verifies request signatures). |
+| twilio_verify | bool | true | Legacy setting; signatures are always enforced, even if an older install saved false. |
 | twilio_base | string | https://api.twilio.com | Leave empty except for tests against a mock. |
 | twilio_account_sid | secret | (empty) | Twilio console → Account Info. |
 | twilio_auth_token | secret | (empty) | Twilio console → Auth Token. |
@@ -40,7 +40,7 @@ Change with `ob-plugin settings phone-agent KEY=value` (or the Plugins page).
 | signalwire_token | secret | (empty) | SignalWire API token (needs the **Voice** scope). |
 | signalwire_phone | string | (empty) | The SignalWire number to call from and listen on, E.164 (`+1…`). |
 | signalwire_signing_key | secret | (empty) | SignalWire Dashboard → API Credentials → Signing Key (only for webhook verification). |
-| signalwire_verify | bool | false | SignalWire only — turn on once `public_base` is final. |
+| signalwire_verify | bool | true | Legacy setting; signatures are always enforced. Supply the SignalWire Signing Key. |
 | signalwire_base | string | (empty) | Blank = `https://SPACE.signalwire.com/api/laml`. Override for tests only. |
 | xai_api_key | secret | (empty) | Only if the shared xAI key is not on the Config page. |
 
@@ -87,12 +87,18 @@ Either provider:
    “A call comes in” to `<public_base>/twilio/voice` (Twilio) or
    `<public_base>/signalwire/voice` (SignalWire), HTTP POST. Optional status
    callback: `/twilio/status` or `/signalwire/status`.
-6. Optional hardening, once the URL is final: Twilio →
-   `twilio_verify=true`; SignalWire → fill the signing key and
-   `signalwire_verify=true`.
-   The `/media` audio bridge is always token-gated: the server bakes a
-   per-call HMAC token into the wss stream URL it hands the provider, so
-   outside parties cannot open it, converse with the agent or spend xAI
-   credits — no configuration needed.
+6. Signatures are mandatory: Twilio uses its Auth Token; SignalWire requires
+   its Signing Key. Missing keys, wrong signatures, or the wrong provider fail
+   with 403. Keep `public_base` exactly equal to the provider-facing URL,
+   including its `/hooks/.../phone-agent` path; query strings are signed too.
+   Old `*_verify=false` values no longer disable verification. Mocks must sign
+   requests rather than turning verification off.
+   The `/media` bridge requires a single-use ticket issued by a signed webhook,
+   expiring after five minutes. The provider echoes it using nested Stream
+   custom Parameters, so queryless media connections remain supported without
+   an authentication bypass. Nothing reaches xAI until the start is verified.
+   Dashboard APIs require the exact private page token, including in development.
+   No configured page token means APIs fail closed; the dashboard proxy supplies
+   it automatically in production.
 7. Test: `ob-plugin-phone-agent-call --to "+1…" --mission "…"`, then check the
    Missions tab for the report. From a thread, just ask: “appelle … et …”.

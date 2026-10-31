@@ -14,8 +14,11 @@
  * and public_base=http://127.0.0.1:<page server port>
  */
 import { createServer } from "node:http";
+import { createHmac } from "node:crypto";
 
 const PORT = Number(process.argv[2] ?? 4090);
+// Match the synthetic Auth Token in an isolated test configuration.
+const AUTH_TOKEN = process.env.MOCK_AUTH_TOKEN || "synthetic-signing-secret";
 
 /* ---- mulaw encode (8k) + speech-shaped caller audio ---- */
 function pcmToMulaw(pcm: Int16Array): Buffer {
@@ -81,6 +84,8 @@ type SimCall = {
   to: string;
   from: string;
   webhookUrl: string;
+  streamUrl?: string;
+  streamToken?: string;
   statusCb: string;
   ws?: WebSocket;
   startedAt: number;
@@ -98,13 +103,15 @@ function log(...a: unknown[]) {
 
 async function postForm(url: string, params: Record<string, string>) {
   try {
+    const data = Object.keys(params).sort().reduce((a, k) => a + k + params[k], url);
     const res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: { "content-type": "application/x-www-form-urlencoded",
+        "x-twilio-signature": createHmac("sha1", AUTH_TOKEN).update(data).digest("base64") },
       body: new URLSearchParams(params).toString(),
     });
     const text = await res.text();
-    log("webhook →", res.status, url.slice(0, 120), text.slice(0, 160).replace(/\n/g, ""));
+    log("webhook →", res.status, new URL(url).pathname);
     return text;
   } catch (e) {
     log("webhook FAILED", url.slice(0, 120), String(e).slice(0, 120));
@@ -114,16 +121,17 @@ async function postForm(url: string, params: Record<string, string>) {
 
 /** Connect the simulated caller to the plugin media WS and speak. */
 function connectCaller(c: SimCall) {
+  if (!c.streamUrl || !c.streamToken) { log("no authenticated Stream returned"); return; }
   // Forward the webhook query (mission=…) like Twilio customParameters would.
   const u = new URL(c.webhookUrl);
-  const wsBase = (u.protocol === "https:" ? "wss://" : "ws://") + u.host;
   const q = new URLSearchParams(u.search);
   q.set("call", c.sid);
   q.set("dir", "out");
   q.set("to", c.to);
   q.set("from", c.from);
-  const wsUrl = wsBase + "/media?" + q.toString();
-  log("caller WS →", wsUrl);
+  q.set("t", c.streamToken);
+  const wsUrl = c.streamUrl.replace(/^http/i, "ws").split("?")[0];
+  log("caller WS →", new URL(wsUrl).pathname);
   let ws: WebSocket;
   try {
     ws = new WebSocket(wsUrl);
@@ -266,7 +274,7 @@ createServer(async (req, res) => {
     res.end(JSON.stringify({ sid, status: "queued", to: c.to, from: c.from }));
     // ring ~700 ms, then answer and fire the answer webhook
     setTimeout(async () => {
-      await postForm(c.webhookUrl, {
+      const xml = await postForm(c.webhookUrl, {
         CallSid: sid,
         CallStatus: "in-progress",
         From: c.from,
@@ -274,6 +282,8 @@ createServer(async (req, res) => {
         Called: c.to,
         Caller: c.from,
       });
+      c.streamUrl = xml.match(/<Stream url="([^"]+)"/)?.[1]?.replace(/&amp;/g, "&");
+      c.streamToken = xml.match(/<Parameter name="t" value="([a-f0-9]+)"/)?.[1];
       connectCaller(c);
     }, 700);
     return;

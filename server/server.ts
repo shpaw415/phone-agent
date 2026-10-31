@@ -26,7 +26,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 // Production: the control plane sets OPEN_BOT_PLUGIN_ID=phone-agent.
 // The preview runtime derives it from the file name ("server") — ignore that.
@@ -132,8 +132,9 @@ function conf() {
     publicBase: (set.public_base || "").trim().replace(/\/+$/, ""),
     gatewayBase: (set.gateway_base || "").trim().replace(/\/+$/, ""),
     autoAnswer: (set.auto_answer ?? "true") === "true",
-    verify: (set.twilio_verify ?? "false") === "true",
-    swVerify: (set.signalwire_verify ?? "false") === "true",
+    // Never honor an old false value: upgrades must also fail closed.
+    verify: true,
+    swVerify: true,
     phoneProvider: tel.provider,
     tel,
     swSpace,
@@ -312,12 +313,12 @@ function hookSigned(req: Request, params: Record<string, string>, provider: "twi
   // Rebuild the URL as the provider saw it: public endpoint + plugin path.
   const idx = url.pathname.indexOf(`/${PLUGIN_ID}/`);
   const pluginPath = idx >= 0 ? url.pathname.slice(idx + PLUGIN_ID.length + 1) : url.pathname;
-  const full = c.publicBase + pluginPath + (url.search || "");
+  const full = c.publicBase + "/" + pluginPath.replace(/^\/+/, "") + (url.search || "");
   const data = Object.keys(params)
     .sort()
     .reduce((acc, k) => acc + k + params[k], full);
   const expected = createHmac("sha1", key).update(data).digest("base64");
-  return sig === expected;
+  return safeEqual(sig, expected);
 }
 
 async function formParams(req: Request): Promise<Record<string, string>> {
@@ -341,28 +342,54 @@ function xmlAttr(v: string): string {
   return v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** Shared secret for per-call media tokens: a runtime secret that already
- *  exists on every working setup (never leaves the server, never logged). */
-function mediaSecret(): string {
-  const c = conf();
-  return c.xaiKey || c.tel.token || c.tel.signingKey || "";
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }
-
-/** Per-call token bound to the stream parameters. The telephony provider just
- *  echoes the wss URL back, so it needs no knowledge of the token — but an
- *  outside party cannot open /media without it (fail closed when no secret). */
-function mediaToken(call: string, dir: string, mission: string): string {
-  const s = mediaSecret();
-  if (!s) return "";
-  return createHmac("sha256", s).update(`${call}:${dir}:${mission}`).digest("hex").slice(0, 32);
-}
+type MediaTicket = { token: string; params: Record<string, string>; expires: number };
+const mediaTickets = new Map<string, MediaTicket>();
+const validCallSid = (sid: string) => /^[A-Za-z0-9_-]{1,128}$/.test(sid);
 
 function streamUrl(extra: Record<string, string>): string {
   const c = conf();
-  const t = mediaToken(extra.call || "", extra.dir || "", extra.mission || "");
-  if (t) extra = { ...extra, t };
+  // Only signed webhook handlers issue these short-lived, single-use tickets.
+  // Twilio drops URL queries: the same ticket is echoed in Stream Parameters.
+  const t = randomBytes(32).toString("hex");
+  if (mediaTickets.size >= 1000) mediaTickets.delete(mediaTickets.keys().next().value!);
+  mediaTickets.set(extra.call, { token: t, params: { ...extra }, expires: Date.now() + 300_000 });
+  extra = { ...extra, t };
   const q = new URLSearchParams(extra).toString();
   return c.publicBase.replace(/^https/i, "wss") + "/media?" + q;
+}
+
+function streamMarkup(extra: Record<string, string>): string {
+  const url = streamUrl(extra);
+  const token = mediaTickets.get(extra.call)!.token;
+  return `<Connect><Stream url="${xmlAttr(url)}">` +
+    `<Parameter name="callSid" value="${xmlAttr(extra.call)}"/>` +
+    `<Parameter name="t" value="${token}"/>` +
+    `</Stream></Connect>`;
+}
+
+function authenticateStart(ws: any, m: any): boolean {
+  const sid = String(m.start?.callSid || "");
+  const mp = m.start?.customParameters ?? {};
+  const query = new URLSearchParams(ws.data?.query || "");
+  const ticket = mediaTickets.get(sid);
+  const token = String(mp.t || query.get("t") || "");
+  if (!validCallSid(sid) || !ticket || ticket.expires < Date.now() ||
+      !safeEqual(token, ticket.token) || bridges.has(sid) ||
+      (mp.callSid && String(mp.callSid) !== sid) ||
+      (query.get("call") && query.get("call") !== sid)) {
+    ws.close(1008, "unauthorized media start");
+    return false;
+  }
+  mediaTickets.delete(sid);
+  clearTimeout(ws.data.authTimer);
+  ws.data.authenticated = true;
+  ws.data.callSid = sid;
+  handleTwilioSocket(ws, new URLSearchParams(ticket.params));
+  return true;
 }
 
 /* ---------------- worker + CLI spawn ---------------- */
@@ -560,6 +587,8 @@ function openXai(b: Bridge) {
   })
     .then(async (res) => {
       const text = await res.text();
+      // A terminal callback may have closed the call while the mint was pending.
+      if (bridges.get(b.callSid) !== b) return;
       let j: any = text;
       try {
         j = JSON.parse(text);
@@ -575,6 +604,7 @@ function openXai(b: Bridge) {
       connectXai(b, c, token);
     })
     .catch((e) => {
+      if (bridges.get(b.callSid) !== b) return;
       b.rec.error = "xAI token mint error: " + String(e).slice(0, 160);
       saveBridge(b, true);
     });
@@ -708,6 +738,7 @@ function runTool(b: Bridge, item: any) {
 }
 
 function closeBridge(callSid: string, reason: string) {
+  mediaTickets.delete(callSid);
   const b = bridges.get(callSid);
   if (!b) return;
   bridges.delete(callSid);
@@ -715,6 +746,7 @@ function closeBridge(callSid: string, reason: string) {
   try {
     b.xai?.close();
   } catch {}
+  try { b.twilio?.close(); } catch {}
   if (b.inert) {
     // Never identified: nothing was recorded, nothing to persist.
     console.log(`[phone-agent] inert socket dropped ${callSid}: ${reason}`);
@@ -795,58 +827,21 @@ function onTwilioMessage(ws: any, raw: string | Buffer) {
     return;
   }
   const ev = String(m.event || "");
+  if (!ws.data?.authenticated) {
+    if (ev !== "start" || !authenticateStart(ws, m)) return;
+  } else if (ev === "start") {
+    ws.close(1008, "duplicate media start");
+    return;
+  }
   if (ev === "start") {
-    const mp = m.start?.customParameters ?? {};
-    const callSid = String(m.start?.callSid || mp.callSid || "unknown");
-    let b = bridges.get(callSid);
-    if (!b) {
-      // Some Twilio edge builds drop the query string on the wss URL, so the
-      // bridge was keyed "unknown" (or ws.data holds no callSid). Adopt the
-      // orphaned bridge and re-key it to the real callSid so media, records
-      // and mission linkage work.
-      const altKey = ws.data?.callSid && bridges.has(ws.data.callSid) ? ws.data.callSid : "unknown";
-      b = bridges.get(altKey);
-      if (!b) return;
-      bridges.delete(altKey);
-      b.callSid = callSid;
-      b.rec.callSid = callSid;
-      // Bind the bridge to THIS socket: media and xAI audio must flow over the
-      // connection the provider actually opened, never a stale one.
-      b.twilio = ws;
-      if (ws.data) ws.data.callSid = callSid;
-      if (b.rec.missionId === undefined && mp.mission) b.missionId = String(mp.mission);
-      bridges.set(callSid, b);
-      b.saveDirty = true;
-      // Drop the orphaned pre-key brief/detail so no stale call lingers.
-      try {
-        saveCalls(loadCalls().filter((c) => c.callSid !== altKey));
-        require("node:fs").rmSync(join(DATA_DIR, detailFile(altKey)), { force: true });
-      } catch {}
-      if (b.inert) {
-        // Unidentified socket now proven to carry a real call: activate it.
-        b.inert = false;
-        b.timer = setInterval(() => {
-          pollDelegations(b);
-          if (Date.now() - b.startedAt > MAX_CALL_SEC * 1000) {
-            b.rec.error = "Hard time limit reached.";
-            hangupCall(callSid);
-          }
-        }, 2000);
-        openXai(b);
-      }
-      saveBridge(b, true);
-      console.log(`[phone-agent] bridge re-keyed to ${callSid} (was "${altKey}")`);
-    }
+    const b = bridges.get(ws.data.callSid);
+    if (!b || b.twilio !== ws) return;
     b.streamSid = String(m.start?.streamSid || "");
-    if (!b.missionId && mp.mission) b.missionId = String(mp.mission);
-    if (!b.rec.missionId && b.missionId) b.rec.missionId = b.missionId;
-    if (!b.rec.from && mp.from) b.rec.from = String(mp.from);
-    if (!b.rec.to && mp.to) b.rec.to = String(mp.to);
     b.saveDirty = true;
   } else if (ev === "media") {
     const callSid = ws.data?.callSid;
     const b = bridges.get(callSid);
-    if (!b) return;
+    if (!b || b.twilio !== ws) return;
     const payload = String(m.media?.payload || "");
     if (!payload) return;
     if (!b.xaiReady) {
@@ -860,7 +855,7 @@ function onTwilioMessage(ws: any, raw: string | Buffer) {
     xaiSend(b, { type: "input_audio_buffer.append", audio: pcmToB64(pcm) });
   } else if (ev === "stop") {
     const callSid = ws.data?.callSid;
-    if (callSid) closeBridge(callSid, "stream stop");
+    if (callSid && bridges.get(callSid)?.twilio === ws) closeBridge(callSid, "stream stop");
   }
 }
 
@@ -1022,20 +1017,18 @@ const server = Bun.serve({
   port: PORT,
   routes: routes as never,
   websocket: {
+    maxPayloadLength: 64 * 1024,
     open(ws) {
-      const data = (ws as any).data as { query?: string; callSid?: string } | undefined;
-      // Always open a bridge. Some Twilio edge builds drop the query string
-      // from the wss url, so callSid can be missing here; the bridge is then
-      // keyed "unknown" and re-keyed to the real callSid when the "start"
-      // event arrives (see onTwilioMessage).
-      handleTwilioSocket(ws, new URLSearchParams(data?.query || ""));
+      // No call record, model session, or shared "unknown" bridge before auth.
+      (ws as any).data.authTimer = setTimeout(() => ws.close(1008, "media authentication timeout"), 10_000);
     },
     message(ws, msg) {
       onTwilioMessage(ws, msg as string);
     },
     close(ws) {
+      clearTimeout((ws as any).data?.authTimer);
       const callSid = (ws as any).data?.callSid;
-      if (callSid) closeBridge(callSid, "socket close");
+      if (callSid && bridges.get(callSid)?.twilio === ws) closeBridge(callSid, "socket close");
     },
   },
   async fetch(req) {
@@ -1046,20 +1039,16 @@ const server = Bun.serve({
 
     /* WebSocket for Twilio media (public hook: /hooks/phone-agent/media) */
     if (p === "/media") {
-      // Per-call token gate: any upgrade that CARRIES stream parameters must
-      // present the token the server baked into the wss URL for that exact
-      // call (fail closed when no secret is configured). Queryless upgrades
-      // (Twilio edge builds that strip the query) are allowed through but the
-      // bridge stays inert until a real "start" event identifies the call.
+      // Queries are optional for providers; authentication at start is not.
       const call = url.searchParams.get("call");
       if (call) {
-        const want = mediaToken(call, url.searchParams.get("dir") || "", url.searchParams.get("mission") || "");
-        if (!want || url.searchParams.get("t") !== want) {
+        const ticket = mediaTickets.get(call);
+        if (!ticket || ticket.expires < Date.now() || !safeEqual(url.searchParams.get("t") || "", ticket.token)) {
           return new Response("unauthorized", { status: 401 });
         }
       }
       const ok = server.upgrade(req, {
-        data: { callSid: call || undefined, query: url.search || "" },
+        data: { authenticated: false, query: url.search || "" },
       });
       return ok ? undefined : new Response("ws upgrade failed", { status: 400 });
     }
@@ -1073,6 +1062,10 @@ const server = Bun.serve({
 
     /* APIs — tolerate the /missions and /settings page prefixes from relative fetches */
     const apiPath = p.replace(/^\/(missions|settings)(?=\/api\/)/, "");
+    const pageToken = process.env.OPEN_BOT_PAGE_TOKEN || "";
+    if (apiPath.startsWith("/api/") &&
+        (!pageToken || !safeEqual(req.headers.get("x-open-bot-page-token") || "", pageToken)))
+      return json({ error: "unauthorized" }, 401);
 
     if (apiPath === "/api/status") return apiStatus();
     if (apiPath === "/api/settings") return apiStatus(); // same readiness payload
@@ -1107,13 +1100,14 @@ const server = Bun.serve({
        handlers are shared; only the signature scheme differs. */
     const hookProvider = p.startsWith("/twilio/") ? "twilio" : p.startsWith("/signalwire/") ? "signalwire" : null;
     if (hookProvider) {
+      if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
       const params = await formParams(req);
       const c = conf();
-      const wantVerify = hookProvider === "signalwire" ? c.swVerify : c.verify;
-      if (wantVerify && !hookSigned(req, params, hookProvider)) {
+      if (hookProvider !== c.phoneProvider || !hookSigned(req, params, hookProvider)) {
         return new Response("bad signature", { status: 403 });
       }
       const callSid = params.CallSid || url.searchParams.get("call") || "";
+      if (!validCallSid(callSid)) return new Response("invalid call SID", { status: 400 });
 
       if (p.endsWith("/voice") && req.method === "POST") {
         const rec: CallRec = {
@@ -1138,26 +1132,19 @@ const server = Bun.serve({
             '<Say language="en-US">The assistant is not available on this line right now. Goodbye.</Say><Hangup/>',
           );
         }
-        return twiml(
-          `<Connect><Stream url="${xmlAttr(streamUrl({ call: callSid, dir: "in", from: params.From || "", to: params.To || "" }))}"/>` +
-            `<Parameter name="callSid" value="${xmlAttr(callSid)}"/>` +
-            `<Parameter name="from" value="${xmlAttr(params.From || "")}"/>` +
-            `<Parameter name="to" value="${xmlAttr(params.To || "")}"/>` +
-            `</Connect>`,
-        );
+        return twiml(streamMarkup({ call: callSid, dir: "in", from: params.From || "", to: params.To || "" }));
       }
 
       if (p.endsWith("/outbound") && req.method === "POST") {
         const missionId = url.searchParams.get("mission") || undefined;
-        return twiml(
-          `<Connect><Stream url="${xmlAttr(streamUrl({ call: callSid, dir: "out", mission: missionId ?? "" }))}"/>` +
-            `<Parameter name="callSid" value="${xmlAttr(callSid)}"/>` +
-            (missionId ? `<Parameter name="mission" value="${xmlAttr(missionId)}"/>` : "") +
-            `</Connect>`,
-        );
+        return twiml(streamMarkup({ call: callSid, dir: "out", mission: missionId ?? "" }));
       }
 
       if (p.endsWith("/status") && req.method === "POST") {
+        if (TERMINAL.has(params.CallStatus || "")) {
+          mediaTickets.delete(callSid);
+          closeBridge(callSid, "provider terminal status");
+        }
         finalizeFromStatus(
           callSid,
           params.CallStatus || "",
@@ -1178,6 +1165,7 @@ console.log(`phone-agent page server on :${PORT}`);
 
 /* keep delegate polling + bridge saves ticking even without media */
 setInterval(() => {
+  for (const [sid, ticket] of mediaTickets) if (ticket.expires < Date.now()) mediaTickets.delete(sid);
   for (const b of bridges.values()) {
     pollDelegations(b);
     saveBridge(b);
